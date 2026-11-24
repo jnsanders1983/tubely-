@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -45,14 +47,11 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Unable to get the thumbnail file", err)
 		return
 	}
-	// get media type
-	mediaType := header.Header.Get("Content-Type")
-
 	defer file.Close()
 
-	imageData, err := io.ReadAll(file)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to read thumbnail", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid thumbnail content type", err)
 		return
 	}
 
@@ -67,8 +66,38 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	encodedImage := base64.StdEncoding.EncodeToString(imageData)
-	thumbnailURL := fmt.Sprintf("data:%s;base64,%s", mediaType, encodedImage)
+	var extension string
+	switch mediaType {
+	case "image/png":
+		extension = ".png"
+	case "image/jpeg":
+		extension = ".jpg"
+	default:
+		respondWithError(w, http.StatusBadRequest, "Unsupported thumbnail type", nil)
+		return
+	}
+
+	filename := videoID.String() + extension
+	diskPath := filepath.Join(cfg.assetsRoot, filename)
+
+	dst, err := os.Create(diskPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Unable to create thumbnail file", err)
+		return
+	}
+
+	_, copyErr := io.Copy(dst, file)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		respondWithError(w, http.StatusInternalServerError, "Unable to write thumbnail file", copyErr)
+		return
+	}
+	if closeErr != nil {
+		respondWithError(w, http.StatusInternalServerError, "Unable to close thumbnail file", closeErr)
+		return
+	}
+
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
 	video.ThumbnailURL = &thumbnailURL
 
 	if err := cfg.db.UpdateVideo(video); err != nil {
